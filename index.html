@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서울시 생활인구 기반 의료접근성 분석</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+html, body { margin:0; height:100%; font-family:Arial,"Malgun Gothic",sans-serif; }
+#app { display:flex; flex-direction:column; height:100%; }
+#panel { padding:12px 16px; background:#fff; box-shadow:0 2px 8px #0002; z-index:1000; }
+h2 { margin:0 0 8px; font-size:20px; }
+.controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+label { font-size:14px; }
+select, input, button { padding:6px; }
+#map { flex:1; min-height:300px; }
+#status { margin-top:8px; font-size:13px; color:#444; }
+.legend { background:white; padding:9px 11px; line-height:1.6; border-radius:4px; box-shadow:0 1px 5px #999; }
+.swatch { display:inline-block; width:13px; height:13px; margin-right:5px; border:1px solid #777; vertical-align:middle; }
+@media(max-width:600px) { h2 {font-size:17px;} .controls {gap:7px;} }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="panel">
+    <h2>서울시 생활인구 기반 의료접근성 분석</h2>
+    <div class="controls">
+      <label>요일
+        <select id="day">
+          <option value="MON">월요일</option><option value="TUE">화요일</option>
+          <option value="WED">수요일</option><option value="THU">목요일</option>
+          <option value="FRI">금요일</option><option value="SAT">토요일</option>
+          <option value="SUN">일요일</option><option value="HOL">공휴일</option>
+        </select>
+      </label>
+      <label>시각 <strong id="timeLabel">10:00</strong>
+        <input id="hour" type="range" min="0" max="23" value="10" step="1">
+      </label>
+      <label>행정동 지도 지표
+        <select id="metric">
+          <option value="ratio">시간대별 의료시설 수 / 생활인구 1만 명</option>
+          <option value="population">시간대별 평균 생활인구</option>
+          <option value="count">행정동 의료시설 수</option>
+        </select>
+      </label>
+    </div>
+    <div id="status">데이터를 불러오는 중입니다.</div>
+  </div>
+  <div id="map"></div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map = L.map('map').setView([37.5665, 126.9780], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+let dongLayer = null;
+let facilityLayer = null;
+let dongData = null;
+let facilityData = null;
+
+const dayNames = {
+  MON:'월요일', TUE:'화요일', WED:'수요일', THU:'목요일',
+  FRI:'금요일', SAT:'토요일', SUN:'일요일', HOL:'공휴일'
+};
+
+function colorFor(value, metric) {
+  if (value === null || !Number.isFinite(value)) return '#bdbdbd';
+  if (metric === 'ratio') {
+    return value < 5 ? '#fff5eb' :
+           value < 10 ? '#fdd0a2' :
+           value < 15 ? '#fdae6b' :
+           value < 25 ? '#e6550d' : '#a63603';
+  }
+  if (metric === 'population') {
+    return value < 5000 ? '#f7fbff' :
+           value < 10000 ? '#c6dbef' :
+           value < 20000 ? '#6baed6' :
+           value < 30000 ? '#2171b5' : '#08306b';
+  }
+  return value < 5 ? '#f7fcf5' :
+         value < 20 ? '#c7e9c0' :
+         value < 50 ? '#74c476' :
+         value < 100 ? '#31a354' : '#006d2c';
+}
+
+function selectedValue(properties) {
+  const hour = Number(document.getElementById('hour').value);
+  const metric = document.getElementById('metric').value;
+  if (metric === 'ratio') return properties[`MED10K_${String(hour).padStart(2,'0')}`];
+  if (metric === 'population') return properties[`POP_${String(hour).padStart(2,'0')}`];
+  return properties.MED_COUNT;
+}
+
+function formatNumber(value) {
+  return Number.isFinite(Number(value)) ? Number(value).toLocaleString('ko-KR', {maximumFractionDigits:2}) : '자료 없음';
+}
+
+function styleDong(feature) {
+  const p = feature.properties || {};
+  const value = Number(selectedValue(p));
+  return {
+    color:'#666', weight:0.6, opacity:0.8,
+    fillColor:colorFor(value, document.getElementById('metric').value),
+    fillOpacity:0.68
+  };
+}
+
+function popupDong(feature) {
+  const p = feature.properties || {};
+  const hour = Number(document.getElementById('hour').value);
+  const key = `MED10K_${String(hour).padStart(2,'0')}`;
+  return `<b>${p.ADSTRD_NM || '행정동 정보 없음'}</b><br>
+    선택 시각: ${String(hour).padStart(2,'0')}:00<br>
+    의료시설 수: ${formatNumber(p.MED_COUNT)}<br>
+    시간대별 평균 생활인구: ${formatNumber(p[`POP_${String(hour).padStart(2,'0')}`])}<br>
+    생활인구 1만 명당 의료시설 수: ${formatNumber(p[key])}<br>
+    <small>※ 생활인구 및 의료시설 수 기반 지표이며 실제 이동시간이나 진료 가능성을 직접 나타내지는 않습니다.</small>`;
+}
+
+function parseClock(value) {
+  const s = String(value ?? '').trim();
+  if (!/^\d{3,4}$/.test(s)) return null;
+  const n = Number(s), h = Math.floor(n / 100), m = n % 100;
+  if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+  return h * 60 + m;
+}
+
+function facilityIsInTimeRange(p) {
+  const day = document.getElementById('day').value;
+  const hour = Number(document.getElementById('hour').value);
+  if (Number(p[`${day}_TIME_OK`]) !== 1) return false;
+  const start = parseClock(p[`${day}_START`]);
+  const end = parseClock(p[`${day}_END`]);
+  if (start === null || end === null || start >= end) return false;
+  const current = hour * 60;
+  return start <= current && current < end;
+}
+
+function updateMap() {
+  if (!dongData || !facilityData) return;
+  const hour = Number(document.getElementById('hour').value);
+  const day = document.getElementById('day').value;
+
+  if (dongLayer) map.removeLayer(dongLayer);
+  dongLayer = L.geoJSON(dongData, {
+    style: styleDong,
+    onEachFeature: (feature, layer) => layer.bindPopup(popupDong(feature))
+  }).addTo(map);
+
+  if (facilityLayer) map.removeLayer(facilityLayer);
+
+  let matched = 0, excluded = 0;
+  const visibleFacilities = {
+    type:'FeatureCollection',
+    features: facilityData.features.filter(f => {
+      const p = f.properties || {};
+      if (Number(p[`${day}_TIME_OK`]) !== 1) {
+        excluded++;
+        return false;
+      }
+      const isOpenByTime = facilityIsInTimeRange(p);
+      if (isOpenByTime) matched++;
+      return isOpenByTime;
+    })
+  };
+
+  facilityLayer = L.geoJSON(visibleFacilities, {
+    pointToLayer: (feature, latlng) => L.circleMarker(latlng, {
+      radius:4, color:'#fff', weight:0.7, fillColor:'#1769aa', fillOpacity:0.9
+    }),
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties || {};
+      const day = document.getElementById('day').value;
+      layer.bindPopup(`<b>${p['기관명'] || '의료시설'}</b><br>
+        분류: ${p['병원분류명'] || '정보 없음'}<br>
+        주소: ${p['주소'] || '정보 없음'}<br>
+        전화: ${p['전화번호'] || '정보 없음'}<br>
+        ${dayNames[day]} 등록시간: ${p[`${day}_START`] || '?'}–${p[`${day}_END`] || '?'}<br>
+        <small>※ 등록된 시간정보 기준 추정이며 실제 진료 여부를 보장하지 않습니다.</small>`);
+    }
+  }).addTo(map);
+
+  const metric = document.getElementById('metric').value;
+  const metricName = metric === 'ratio' ? '생활인구 1만 명당 의료시설 수' :
+                     metric === 'population' ? '시간대별 평균 생활인구' : '행정동 의료시설 수';
+  document.getElementById('status').textContent =
+    `${dayNames[day]} ${String(hour).padStart(2,'0')}:00 | ` +
+    `${metricName} 표시 | 등록시간 범위에 포함되는 의료시설 ${matched.toLocaleString('ko-KR')}개 | ` +
+    `시간 판정 제외 ${excluded.toLocaleString('ko-KR')}개`;
+  updateLegend(metric);
+}
+
+let legendControl = null;
+function updateLegend(metric) {
+  if (legendControl) map.removeControl(legendControl);
+  legendControl = L.control({position:'bottomright'});
+  legendControl.onAdd = function() {
+    const div = L.DomUtil.create('div','legend');
+    let rows;
+    if (metric === 'ratio') rows = [
+      ['#fff5eb','0–5'],['#fdd0a2','5–10'],['#fdae6b','10–15'],
+      ['#e6550d','15–25'],['#a63603','25 이상']
+    ];
+    else if (metric === 'population') rows = [
+      ['#f7fbff','5,000 미만'],['#c6dbef','5,000–10,000'],
+      ['#6baed6','10,000–20,000'],['#2171b5','20,000–30,000'],['#08306b','30,000 이상']
+    ];
+    else rows = [
+      ['#f7fcf5','5 미만'],['#c7e9c0','5–20'],['#74c476','20–50'],
+      ['#31a354','50–100'],['#006d2c','100 이상']
+    ];
+    div.innerHTML = '<b>행정동 지표</b><br>' +
+      rows.map(r => `<span class="swatch" style="background:${r[0]}"></span>${r[1]}`).join('<br>') +
+      '<hr><span class="swatch" style="background:#1769aa;border-radius:50%"></span>등록시간 범위 내 의료시설';
+    return div;
+  };
+  legendControl.addTo(map);
+}
+
+async function loadData() {
+  const status = document.getElementById('status');
+  try {
+    const [dongResponse, facilityResponse] = await Promise.all([
+      fetch('seoul_dong_medical_accessibility.geojson'),
+      fetch('seoul_medical_facilities_with_status.geojson')
+    ]);
+    if (!dongResponse.ok || !facilityResponse.ok) {
+      throw new Error('GeoJSON 파일을 읽지 못했습니다. 웹지도 폴더에서 로컬 서버를 실행했는지 확인하세요.');
+    }
+    dongData = await dongResponse.json();
+    facilityData = await facilityResponse.json();
+    updateMap();
+    const bounds = dongLayer.getBounds();
+    if (bounds.isValid()) map.fitBounds(bounds, {padding:[10,10]});
+  } catch (error) {
+    status.textContent = '데이터 로드 오류: ' + error.message;
+    console.error(error);
+  }
+}
+
+document.getElementById('hour').addEventListener('input', () => {
+  document.getElementById('timeLabel').textContent =
+    String(document.getElementById('hour').value).padStart(2,'0') + ':00';
+  updateMap();
+});
+document.getElementById('day').addEventListener('change', updateMap);
+document.getElementById('metric').addEventListener('change', updateMap);
+
+loadData();
+</script>
+</body>
+</html>
