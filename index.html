@@ -18,6 +18,80 @@ select, input, button { padding:6px; }
 .legend { background:white; padding:9px 11px; line-height:1.6; border-radius:4px; box-shadow:0 1px 5px #999; }
 .swatch { display:inline-block; width:13px; height:13px; margin-right:5px; border:1px solid #777; vertical-align:middle; }
 @media(max-width:600px) { h2 {font-size:17px;} .controls {gap:7px;} }
+
+/* MOBILE RESPONSIVE CSS */
+@media screen and (max-width: 768px) {
+    html, body {
+        width: 100%;
+        max-width: 100%;
+        margin: 0;
+        padding: 0;
+        overflow-x: hidden;
+    }
+
+    #map {
+        width: 100%;
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+
+    button, select, input {
+        max-width: 100%;
+        box-sizing: border-box;
+    }
+
+    select, button {
+        min-height: 40px;
+        font-size: 14px;
+    }
+
+    input[type="range"] {
+        width: 100%;
+        min-height: 32px;
+    }
+
+    .leaflet-popup-content {
+        max-width:  min(260px, 68vw);
+        overflow-wrap: anywhere;
+    }
+
+    .leaflet-control {
+        max-width: 90vw;
+    }
+}
+
+@media screen and (max-width: 480px) {
+    .leaflet-control-zoom a {
+        width: 36px;
+        height: 36px;
+        line-height: 36px;
+    }
+
+    .leaflet-popup-content {
+        margin: 10px;
+        max-width: 65vw;
+    }
+}
+
+
+/* MOBILE MAP RESIZE FIX */
+@media screen and (max-width: 768px) {
+    html, body {
+        min-height: 100%;
+    }
+
+    #app {
+        min-height: 100%;
+        height: 100dvh;
+    }
+
+    #map {
+        flex: 1 1 auto;
+        min-height: 45vh;
+        width: 100%;
+    }
+}
+
 </style>
 </head>
 <body>
@@ -41,6 +115,14 @@ select, input, button { padding:6px; }
           <option value="ratio">시간대별 의료시설 수 / 생활인구 1만 명</option>
           <option value="population">시간대별 평균 생활인구</option>
           <option value="count">행정동 의료시설 수</option>
+        </select>
+      </label>
+      <label>취약성 지도
+        <select id="vulnerabilityMode">
+          <option value="hourly">시간대별 지표</option>
+          <option value="day">주간 취약성</option>
+          <option value="night">야간 취약성</option>
+          <option value="both">주·야간 공통 취약성</option>
         </select>
       </label>
     </div>
@@ -100,6 +182,24 @@ function formatNumber(value) {
 
 function styleDong(feature) {
   const p = feature.properties || {};
+  const mode = document.getElementById('vulnerabilityMode').value;
+
+  if (mode !== 'hourly') {
+    const field = mode === 'day' ? 'DAY_VULN' :
+                  mode === 'night' ? 'NIGHT_VULN' : 'BOTH_VULN';
+    const raw = p[field];
+    const value = raw === null || raw === undefined || raw === ''
+      ? null : Number(raw);
+
+    const fill = value === 1 ? '#d73027' :
+                 value === 0 ? '#d9d9d9' : '#ffd166';
+
+    return {
+      color:'#666', weight:0.6, opacity:0.8,
+      fillColor:fill, fillOpacity:0.72
+    };
+  }
+
   const value = Number(selectedValue(p));
   return {
     color:'#666', weight:0.6, opacity:0.8,
@@ -110,6 +210,29 @@ function styleDong(feature) {
 
 function popupDong(feature) {
   const p = feature.properties || {};
+  const mode = document.getElementById('vulnerabilityMode').value;
+
+  if (mode !== 'hourly') {
+    const field = mode === 'day' ? 'DAY_VULN' :
+                  mode === 'night' ? 'NIGHT_VULN' : 'BOTH_VULN';
+    const value = p[field];
+    const classification = value === null || value === undefined || value === ''
+      ? '자료 없음'
+      : Number(value) === 1 ? '취약 가능성 높음' : '그 외';
+
+    return `<b>${p.ADSTRD_NM || '행정동 정보 없음'}</b><br>
+      지도 모드: ${mode === 'day' ? '주간 취약성' :
+                   mode === 'night' ? '야간 취약성' : '주·야간 공통 취약성'}<br>
+      취약성 분류: ${classification}<hr>
+      주간 평균 생활인구: ${formatNumber(p.DAY_POP)}<br>
+      야간 평균 생활인구: ${formatNumber(p.NIGHT_POP)}<br>
+      주간 의료시설 수: ${formatNumber(p.DAY_MED)}<br>
+      야간 의료시설 수: ${formatNumber(p.NIGHT_MED)}<br>
+      주간 1만 명당 의료시설 수: ${formatNumber(p.DAY_10K)}<br>
+      야간 1만 명당 의료시설 수: ${formatNumber(p.NIGHT_10K)}<br>
+      <small>※ 상대적 공급지표에 따른 분류입니다. 실제 이동시간, 진료 가능 여부, 의료기관 규모를 직접 반영하지 않습니다.</small>`;
+  }
+
   const hour = Number(document.getElementById('hour').value);
   const key = `MED10K_${String(hour).padStart(2,'0')}`;
   return `<b>${p.ADSTRD_NM || '행정동 정보 없음'}</b><br>
@@ -184,12 +307,22 @@ function updateMap() {
   }).addTo(map);
 
   const metric = document.getElementById('metric').value;
+  const mode = document.getElementById('vulnerabilityMode').value;
   const metricName = metric === 'ratio' ? '생활인구 1만 명당 의료시설 수' :
                      metric === 'population' ? '시간대별 평균 생활인구' : '행정동 의료시설 수';
-  document.getElementById('status').textContent =
-    `${dayNames[day]} ${String(hour).padStart(2,'0')}:00 | ` +
-    `${metricName} 표시 | 등록시간 범위에 포함되는 의료시설 ${matched.toLocaleString('ko-KR')}개 | ` +
-    `시간 판정 제외 ${excluded.toLocaleString('ko-KR')}개`;
+
+  if (mode === 'hourly') {
+    document.getElementById('status').textContent =
+      `${dayNames[day]} ${String(hour).padStart(2,'0')}:00 | ` +
+      `${metricName} 표시 | 등록시간 범위에 포함되는 의료시설 ${matched.toLocaleString('ko-KR')}개 | ` +
+      `시간 판정 제외 ${excluded.toLocaleString('ko-KR')}개`;
+  } else {
+    const modeName = mode === 'day' ? '주간 취약성' :
+                     mode === 'night' ? '야간 취약성' : '주·야간 공통 취약성';
+    document.getElementById('status').textContent =
+      `${modeName} 표시 | 빨강: 취약 가능성 높음 | 회색: 그 외 | 노랑: 자료 없음`;
+  }
+
   updateLegend(metric);
 }
 
@@ -199,6 +332,16 @@ function updateLegend(metric) {
   legendControl = L.control({position:'bottomright'});
   legendControl.onAdd = function() {
     const div = L.DomUtil.create('div','legend');
+    const mode = document.getElementById('vulnerabilityMode').value;
+
+    if (mode !== 'hourly') {
+      div.innerHTML = '<b>취약성 분류</b><br>' +
+        '<span class="swatch" style="background:#d73027"></span>취약 가능성 높음<br>' +
+        '<span class="swatch" style="background:#d9d9d9"></span>그 외<br>' +
+        '<span class="swatch" style="background:#ffd166"></span>자료 없음';
+      return div;
+    }
+
     let rows;
     if (metric === 'ratio') rows = [
       ['#fff5eb','0–5'],['#fdd0a2','5–10'],['#fdae6b','10–15'],
@@ -223,15 +366,36 @@ function updateLegend(metric) {
 async function loadData() {
   const status = document.getElementById('status');
   try {
-    const [dongResponse, facilityResponse] = await Promise.all([
+    const [dongResponse, facilityResponse, vulnerabilityResponse] = await Promise.all([
       fetch('seoul_dong_medical_accessibility.geojson'),
-      fetch('seoul_medical_facilities_with_status.geojson')
+      fetch('seoul_medical_facilities_with_status.geojson'),
+      fetch('seoul_dong_day_night_vulnerability.geojson')
     ]);
-    if (!dongResponse.ok || !facilityResponse.ok) {
-      throw new Error('GeoJSON 파일을 읽지 못했습니다. 웹지도 폴더에서 로컬 서버를 실행했는지 확인하세요.');
+    if (!dongResponse.ok || !facilityResponse.ok || !vulnerabilityResponse.ok) {
+      throw new Error('GeoJSON 파일을 읽지 못했습니다. 세 데이터 파일이 웹지도 폴더에 있는지 확인하세요.');
     }
     dongData = await dongResponse.json();
     facilityData = await facilityResponse.json();
+    const vulnerabilityData = await vulnerabilityResponse.json();
+
+    // 행정동 코드를 기준으로 취약성 속성을 기존 시간대별 레이어에 연결
+    const vulnerabilityByCode = new Map(
+      vulnerabilityData.features.map(f => [
+        String(f.properties?.ADSTRD_CD ?? ''),
+        f.properties || {}
+      ])
+    );
+
+    dongData.features.forEach(feature => {
+      const p = feature.properties || {};
+      const v = vulnerabilityByCode.get(String(p.ADSTRD_CD ?? ''));
+      if (v) {
+        ['DAY_POP','NIGHT_POP','DAY_MED','NIGHT_MED',
+         'DAY_10K','NIGHT_10K','DAY_VULN','NIGHT_VULN','BOTH_VULN']
+          .forEach(key => { p[key] = v[key]; });
+      }
+    });
+
     updateMap();
     const bounds = dongLayer.getBounds();
     if (bounds.isValid()) map.fitBounds(bounds, {padding:[10,10]});
@@ -248,8 +412,27 @@ document.getElementById('hour').addEventListener('input', () => {
 });
 document.getElementById('day').addEventListener('change', updateMap);
 document.getElementById('metric').addEventListener('change', updateMap);
+document.getElementById('vulnerabilityMode').addEventListener('change', updateMap);
 
 loadData();
+
+// MOBILE MAP RESIZE FIX
+window.addEventListener('resize', function () {
+    if (typeof map !== 'undefined') {
+        setTimeout(function () {
+            map.invalidateSize({ pan: false });
+        }, 150);
+    }
+});
+
+window.addEventListener('orientationchange', function () {
+    if (typeof map !== 'undefined') {
+        setTimeout(function () {
+            map.invalidateSize({ pan: false });
+        }, 300);
+    }
+});
+
 </script>
 </body>
 </html>
